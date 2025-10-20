@@ -45,10 +45,14 @@ FIRECRACKER="./build/cargo_target/x86_64-unknown-linux-musl/debug/firecracker"
 
 # Download the kernel if it doesn't exist
 if [[ ! -f ${KERNEL} ]]; then
-  ./tools/devtool build_ci_artifacts kernels $KERNEL_VERSION
+  raw_kernel_path="$(find ./resources/${ARCH} -maxdepth 1 -regextype sed -regex ".*/vmlinux-6\.1\.[0-9]*" -type f)"
+  if [[ -z $raw_kernel_path ]]; then
+    ./tools/devtool build_ci_artifacts kernels $KERNEL_VERSION
+    raw_kernel_path="$(find ./resources/${ARCH} -maxdepth 1 -regextype sed -regex ".*/vmlinux-6\.1\.[0-9]*" -type f)"
+  fi
 
   # TODO: Allow KERNEL_VERSION to be used here
-  cp "$(find ./resources/${ARCH} -maxdepth 1 -regextype sed -regex ".*/vmlinux-6\.1\.[0-9]*" -type f)" $KERNEL
+  cp $raw_kernel_path $KERNEL
 fi
 
 # Create a key pair
@@ -63,7 +67,7 @@ if [[ ! -f ${ROOTFS} ]]; then
 
   # Create rootfs_dir
   echo "Creating ${rootfs_dir}"
-  [ -d "${rootfs_dir}" ] || sudo rm -rf "${rootfs_dir}"
+  [[ -d "${rootfs_dir}" ]] || sudo rm -rf "${rootfs_dir}"
   mkdir -p "${rootfs_dir}"
 
   # Use debootstrap to create a standard rootfs
@@ -117,6 +121,21 @@ EOF
   rmdir "${mount_dir}"
 fi
 
+# Create a jailer user/group, if they do not exist
+if ! getent group "jailer" > /dev/null 2>&1; then
+  echo "Creating group jailer"
+  sudo groupadd --system "jailer"
+fi
+
+if ! getent passwd "jailer" > /dev/null 2>&1; then
+  echo "Creating user jailer"
+  sudo useradd --system \
+      -g "jailer" \
+      -d /dev/null \
+      -s /usr/bin/nologin \
+      "jailer"
+fi
+
 # Copy the kernel and rootfs to the jail
 if [[ ! -d $JAILER_ROOT_DIR ]]; then
   sudo mkdir -p $JAILER_ROOT_DIR
@@ -124,6 +143,7 @@ if [[ ! -d $JAILER_ROOT_DIR ]]; then
   sudo cp $ROOTFS $JAILER_ROOT_DIR/rootfs.ext4
   sudo cp $CONFIG_FILE $JAILER_ROOT_DIR/config.json
   sudo touch $JAILER_ROOT_DIR/out.log
+  sudo chown -R jailer:jailer $JAILER_ROOT_DIR
 fi
 
 # Setup network interface
@@ -151,8 +171,8 @@ sudo nft add rule firecracker filter iifname "${TAP_DEV}" oifname "${HOST_IFACE}
 sudo ${JAILER} \
     --exec-file ${FIRECRACKER} \
     --id ${ID} \
-    --uid $(sudo id -u) \
-    --gid $(sudo id -g) \
+    --uid $(id -u jailer) \
+    --gid $(id -g jailer) \
     --new-pid-ns \
     --daemonize \
     -- \
@@ -170,12 +190,16 @@ echo "Connect using the API socket found at ${JAILER_ROOT_DIR}/run/firecracker.s
 echo
 echo "Running ssh -i $KEY_NAME root@$GUEST_IP..."
 
-ssh -i $KEY_NAME root@${GUEST_IP} 2>/dev/null || true
+ssh -i $KEY_NAME root@${GUEST_IP} || true
 
 # Use `root` for both the login and password.
 # Run `reboot` to exit.
 
-sudo ip link del $TAP_DEV
-sudo sh -c "echo 0 > /proc/sys/net/ipv4/ip_forward"
-sudo nft delete table firecracker
-sudo rm -rf "/srv/jailer/firecracker/$ID"
+function clean() {
+  sudo ip link del $TAP_DEV
+  sudo sh -c "echo 0 > /proc/sys/net/ipv4/ip_forward"
+  sudo nft delete table firecracker
+  sudo rm -rf "/srv/jailer/firecracker/$ID"
+}
+
+clean
