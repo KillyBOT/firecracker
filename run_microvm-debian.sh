@@ -4,11 +4,23 @@ set -e
 
 ARCH=$(uname -m)
 DEBIAN_VERSION="bookworm"
+ROOTFS_SIZE="1G"
+ID="$(uuidgen | tr A-Z a-z)"
+
+JAILER_ROOT_DIR="/srv/jailer/firecracker/$ID/root"
+API_SOCKET="${JAILER_ROOT_DIR}/run/firecracker.socket"
 
 KERNEL="kernel-debian-${DEBIAN_VERSION}.bin"
+KERNEL_VERSION="6.1"
+KERNEL_BOOT_ARGS="console=ttyS0 reboot=k panic=1 pci=off ip=172.16.0.2::172.16.0.1:255.255.255.252::eth0:off i8042.noaux i8042.nomux i8042.nopnp i8042.nokbd quiet"
+
 ROOTFS="rootfs-debian-${DEBIAN_VERSION}.ext4"
+ROOTFS_SIZE="1G"
+
 KEY_NAME="id_ed25519-debian-${DEBIAN_VERSION}"
 PUBLIC_KEY=$(cat "${KEY_NAME}.pub") 2>/dev/null || true
+
+CONFIG_FILE="microvm_config-debian-${DEBIAN_VERSION}.json"
 
 # Networking information
 # BRIGE_DEV="br0"
@@ -21,38 +33,33 @@ MASK_SHORT="/30"
 # VM's outbound network traffic through. If outbound traffic doesn't work,
 # double check this returns the correct interface!
 HOST_IFACE=$(ip -j route list default | jq -r '.[0].dev')
-# The IP address of a guest is derived from its MAC address with
-# `fcnet-setup.sh`, this has been pre-configured in the guest rootfs. It is
-# important that `TAP_IP` and `FC_MAC` match this.
-FC_MAC="06:00:AC:10:00:02"
+# # The IP address of a guest is derived from its MAC address with
+# # `fcnet-setup.sh`, this has been pre-configured in the guest rootfs. It is
+# # important that `TAP_IP` and `FC_MAC` match this.
+# FC_MAC="06:00:AC:10:00:02"
 
-# VM_ID="microvm-debian-${DEBIAN_VERSION}"
-ID="$(uuidgen | tr A-Z a-z)"
-CHROOT_ROOT_DIR="/srv/jailer/firecracker/$ID/root"
-
-LOGFILE="./microvm_log-debian-${DEBIAN_VERSION}.log"
+# LOGFILE="./microvm_log-debian-${DEBIAN_VERSION}.log"
 
 JAILER="./build/cargo_target/x86_64-unknown-linux-musl/debug/jailer"
 FIRECRACKER="./build/cargo_target/x86_64-unknown-linux-musl/debug/firecracker"
-CONFIG_FILE="microvm_config-debian-${DEBIAN_VERSION}.json"
 
 # Download the kernel if it doesn't exist
 if [[ ! -f ${KERNEL} ]]; then
-  ./tools/devtool build_ci_artifacts kernels 6.1
+  ./tools/devtool build_ci_artifacts kernels $KERNEL_VERSION
 
+  # TODO: Allow KERNEL_VERSION to be used here
   cp "$(find ./resources/${ARCH} -maxdepth 1 -regextype sed -regex ".*/vmlinux-6\.1\.[0-9]*" -type f)" $KERNEL
 fi
 
-# Create a public/private key pair
+# Create a key pair
 if [[ ! -f ${KEY_NAME} ]]; then
   ssh-keygen -t ed25519 -f "${KEY_NAME}" -N "" -q
   PUBLIC_KEY=$(cat "${KEY_NAME}.pub")
 fi
 
-# Download the rootfs if it doesn't exist
+# Download and setup the rootfs if it doesn't exist
 if [[ ! -f ${ROOTFS} ]]; then
   rootfs_dir="rootfs-debian-${DEBIAN_VERSION}"
-  img_size="1G" # Size of the rootfs image
 
   # Create rootfs_dir
   echo "Creating ${rootfs_dir}"
@@ -96,7 +103,7 @@ EOF
 
   # Create the rootfs image
   rm -f "${ROOTFS}"
-  truncate -s "${img_size}" "${ROOTFS}"
+  truncate -s "${ROOTFS_SIZE}" "${ROOTFS}"
   mkfs.ext4 "${ROOTFS}"
 
   # Create a temporary mount point to write everything to
@@ -110,21 +117,14 @@ EOF
   rmdir "${mount_dir}"
 fi
 
-# Setup the jail if it doesn't exist
-if [[ ! -d ${CHROOT_ROOT_DIR} ]]; then
-  sudo mkdir -p $CHROOT_ROOT_DIR
-  sudo cp $KERNEL "$CHROOT_ROOT_DIR/kernel.bin"
-  sudo cp $ROOTFS "$CHROOT_ROOT_DIR/rootfs.ext4"
-  sudo cp $CONFIG_FILE "$CHROOT_ROOT_DIR/config.json"
-  sudo touch "$CHROOT_ROOT_DIR/out.log"
+# Copy the kernel and rootfs to the jail
+if [[ ! -d $JAILER_ROOT_DIR ]]; then
+  sudo mkdir -p $JAILER_ROOT_DIR
+  sudo cp $KERNEL $JAILER_ROOT_DIR/kernel.bin
+  sudo cp $ROOTFS $JAILER_ROOT_DIR/rootfs.ext4
+  sudo cp $CONFIG_FILE $JAILER_ROOT_DIR/config.json
+  sudo touch $JAILER_ROOT_DIR/out.log
 fi
-
-echo "Current config:"
-echo "Kernel: ${KERNEL}"
-echo "Rootfs: ${ROOTFS}"
-echo "Key: ${KEY_NAME}"
-echo "Jail root: ${CHROOT_ROOT_DIR}"
-echo "Config: ${CONFIG_FILE}"
 
 # Setup network interface
 sudo ip link del "$TAP_DEV" 2> /dev/null || true
@@ -133,7 +133,6 @@ sudo ip addr add "${HOST_IP}${MASK_SHORT}" dev "$TAP_DEV"
 sudo ip link set dev "$TAP_DEV" up
 
 # Allow for IPv4 forwarding
-sudo sh -c "echo 0 > /proc/sys/net/ipv4/ip_forward"
 sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
 
 ## Set up microVM internet access
@@ -149,31 +148,34 @@ sudo nft add rule firecracker postrouting ip saddr ${GUEST_IP} oifname "${HOST_I
 # Forward packets to and from the tap device
 sudo nft add rule firecracker filter iifname "${TAP_DEV}" oifname "${HOST_IFACE}" accept
 
-# ./firectl \
-#   --firecracker-binary=${FIRECRACKER} \
-#   --kernel=${KERNEL} \
-#   --kernel-opts="console=ttyS0 reboot=k panic=1 pci=off ip=172.16.0.2::172.16.0.1:255.255.255.252::eth0:off i8042.noaux i8042.nomux i8042.nopnp i8042.nokbd quiet" \
-#   --jailer=${JAILER} \
-#   --chroot-base-dir=${JAILS_BASE_DIR} \
 sudo ${JAILER} \
     --exec-file ${FIRECRACKER} \
-    --id $ID \
+    --id ${ID} \
     --uid $(sudo id -u) \
     --gid $(sudo id -g) \
     --new-pid-ns \
     --daemonize \
     -- \
     --config-file config.json \
-    --log-path ./out.log \
+    --log-path out.log \
     --level debug
 # sudo ${FIRECRACKER} \
 #   --no-api \
 #   --config-file ${CONFIG_FILE}
 
-echo "MicroVM started, use the following to access:"
-echo
-echo "\$ ssh -i ${KEY_NAME} root@${GUEST_IP}"
+sleep 1s
 
+echo "Created VM with ID ${ID}"
+echo "Connect using the API socket found at ${JAILER_ROOT_DIR}/run/firecracker.socket"
+echo
+echo "Running ssh -i $KEY_NAME root@$GUEST_IP..."
+
+ssh -i $KEY_NAME root@${GUEST_IP} 2>/dev/null || true
 
 # Use `root` for both the login and password.
 # Run `reboot` to exit.
+
+sudo ip link del $TAP_DEV
+sudo sh -c "echo 0 > /proc/sys/net/ipv4/ip_forward"
+sudo nft delete table firecracker
+sudo rm -rf "/srv/jailer/firecracker/$ID"
