@@ -1,5 +1,3 @@
-#!/bin/sh
-
 set -e
 
 ARCH=$(uname -m)
@@ -18,7 +16,7 @@ ROOTFS="rootfs-debian-${DEBIAN_VERSION}.ext4"
 ROOTFS_SIZE="1G"
 
 KEY_NAME="id_ed25519-debian-${DEBIAN_VERSION}"
-PUBLIC_KEY=$(cat "${KEY_NAME}.pub") 2>/dev/null || true
+PUBLIC_KEY=$(cat "${KEY_NAME}.pub" 2>/dev/null || true)
 
 CONFIG_FILE="microvm_config-debian-${DEBIAN_VERSION}.json"
 
@@ -43,11 +41,14 @@ HOST_IFACE=$(ip -j route list default | jq -r '.[0].dev')
 JAILER="./build/cargo_target/x86_64-unknown-linux-musl/debug/jailer"
 FIRECRACKER="./build/cargo_target/x86_64-unknown-linux-musl/debug/firecracker"
 
+# Build firecracker if it doesn't exist
+[[ -f ${FIRECRACKER} ]] || sudo ./tools/devtool build
+
 # Download the kernel if it doesn't exist
 if [[ ! -f ${KERNEL} ]]; then
-  raw_kernel_path="$(find ./resources/${ARCH} -maxdepth 1 -regextype sed -regex ".*/vmlinux-6\.1\.[0-9]*" -type f)"
+  raw_kernel_path=$(find ./resources/${ARCH} -maxdepth 1 -regextype sed -regex ".*/vmlinux-6\.1\.[0-9]*" -type f 2>/dev/null || true)
   if [[ -z $raw_kernel_path ]]; then
-    ./tools/devtool build_ci_artifacts kernels $KERNEL_VERSION
+    sudo ./tools/devtool build_ci_artifacts kernels $KERNEL_VERSION
     raw_kernel_path="$(find ./resources/${ARCH} -maxdepth 1 -regextype sed -regex ".*/vmlinux-6\.1\.[0-9]*" -type f)"
   fi
 
@@ -108,7 +109,7 @@ EOF
   # Create the rootfs image
   rm -f "${ROOTFS}"
   truncate -s "${ROOTFS_SIZE}" "${ROOTFS}"
-  mkfs.ext4 "${ROOTFS}"
+  sudo mkfs.ext4 "${ROOTFS}"
 
   # Create a temporary mount point to write everything to
   mount_dir=$(mktemp -d)
