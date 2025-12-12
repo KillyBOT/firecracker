@@ -54,7 +54,7 @@ use crate::vstate::memory::GuestRegionMmap;
 use crate::vstate::resources::ResourceAllocator;
 use crate::vstate::vcpu::VcpuError;
 use crate::vstate::vm::{Vm, VmError};
-use crate::{EventManager, Vmm, VmmError};
+use crate::{EventManager, Vmm, VmmError, Snapshotter};
 
 /// Errors associated with starting the instance.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -314,7 +314,7 @@ pub fn build_microvm_for_boot(
         shutdown_exit_code: None,
         kvm,
         vm,
-        uffd: None,
+        snapshotter: Snapshotter { uffd: None },
         vcpus_handles: Vec::new(),
         vcpus_exit_evt,
         device_manager,
@@ -514,7 +514,9 @@ pub fn build_microvm_from_snapshot(
         shutdown_exit_code: None,
         kvm,
         vm,
-        uffd,
+        snapshotter: Snapshotter {
+            uffd,
+        },
         vcpus_handles: Vec::new(),
         vcpus_exit_evt,
         device_manager,

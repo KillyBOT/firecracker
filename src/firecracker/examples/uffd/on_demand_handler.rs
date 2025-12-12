@@ -10,6 +10,8 @@ mod uffd_utils;
 use std::fs::File;
 use std::os::unix::net::UnixListener;
 
+use userfaultfd::FaultKind;
+
 use uffd_utils::{Runtime, UffdHandler};
 
 fn main() {
@@ -28,8 +30,8 @@ fn main() {
     runtime.run(|uffd_handler: &mut UffdHandler| {
         // !DISCLAIMER!
         // When using UFFD together with the balloon device, this handler needs to deal with
-        // `remove` and `pagefault` events. There are multiple things to keep in mind in
-        // such setups:
+        // `remove` and `pagefault` events. There are multiple things to keep in mind in such
+        // setups:
         //
         // As long as any `remove` event is pending in the UFFD queue, all ioctls return EAGAIN
         // -----------------------------------------------------------------------------------
@@ -41,31 +43,30 @@ fn main() {
         // UFFD might receive events in not in their causal order
         // -----------------------------------------------------
         //
-        // For example, the guest
-        // kernel might first respond to a balloon inflation by freeing some memory, and
-        // telling Firecracker about this. Firecracker will then madvise(MADV_DONTNEED) the
-        // free memory range, which causes a `remove` event to be sent to UFFD. Then, the
-        // guest kernel might immediately fault the page in again (for example because
-        // default_on_oom was set). which causes a `pagefault` event to be sent to UFFD.
+        // For example, the guest kernel might first respond to a balloon inflation by freeing some
+        // memory, and telling Firecracker about this. Firecracker will then madvise(MADV_DONTNEED)
+        // the free memory range, which causes a `remove` event to be sent to UFFD. Then, the guest
+        // kernel might immediately fault the page in again (for example because default_on_oom was
+        // set). which causes a `pagefault` event to be sent to UFFD.
         //
         // However, the pagefault will be triggered from inside KVM on the vCPU thread, while the
         // balloon device is handled by Firecracker on its VMM thread. This means that potentially
         // this handler can receive the `pagefault` _before_ the `remove` event.
         //
-        // This means that the simple "greedy" strategy of simply prefetching _all_ UFFD events
-        // to make sure no `remove` event is blocking us can result in the handler acting on
-        // the `pagefault` event before the `remove` message (despite the `remove` event being
-        // in the causal past of the `pagefault` event), which means that we will fault in a page
-        // from the snapshot file, while really we should be faulting in a zero page.
+        // This means that the simple "greedy" strategy of simply prefetching _all_ UFFD events to
+        // make sure no `remove` event is blocking us can result in the handler acting on the
+        // `pagefault` event before the `remove` message (despite the `remove` event being in the
+        // causal past of the `pagefault` event), which means that we will fault in a page from the
+        // snapshot file, while really we should be faulting in a zero page.
         //
-        // In this example handler, we ignore this problem, to avoid
-        // complexity (under the assumption that the guest kernel will zero a newly faulted in
-        // page anyway). A production handler will most likely want to ensure that `remove`
-        // events for a specific range are always handled before `pagefault` events.
+        // In this example handler, we ignore this problem, to avoid complexity (under the
+        // assumption that the guest kernel will zero a newly faulted in page anyway). A production
+        // handler will most likely want to ensure that `remove` events for a specific range are
+        // always handled before `pagefault` events.
         //
-        // Lastly, we still need to deal with the race condition where a `remove` event arrives
-        // in the UFFD queue after we got done reading all events, in which case we need to go
-        // back to reading more events before we can continue processing `pagefault`s.
+        // Lastly, we still need to deal with the race condition where a `remove` event arrives in
+        // the UFFD queue after we got done reading all events, in which case we need to go back to
+        // reading more events before we can continue processing `pagefault`s.
         let mut deferred_events = Vec::new();
 
         loop {
@@ -81,8 +82,12 @@ fn main() {
                 // We expect to receive either a Page Fault or `remove`
                 // event (if the balloon device is enabled).
                 match event {
-                    userfaultfd::Event::Pagefault { addr, .. } => {
-                        if !uffd_handler.serve_pf(addr.cast(), uffd_handler.page_size) {
+                    userfaultfd::Event::Pagefault { addr, kind, .. } => {
+                        if !uffd_handler.serve_pf(
+                            addr.cast(),
+                            uffd_handler.page_size,
+                            kind == FaultKind::WriteProtected,
+                        ) {
                             deferred_events.push(event);
                         }
                     }

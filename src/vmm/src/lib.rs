@@ -127,7 +127,6 @@ use device_manager::DeviceManager;
 use event_manager::{EventManager as BaseEventManager, EventOps, Events, MutEventSubscriber};
 use seccomp::BpfProgram;
 use snapshot::Persist;
-use userfaultfd::Uffd;
 use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::EventFd;
 use vmm_sys_util::terminal::Terminal;
@@ -144,7 +143,7 @@ use crate::devices::virtio::block::device::Block;
 use crate::devices::virtio::mem::{VIRTIO_MEM_DEV_ID, VirtioMem, VirtioMemError, VirtioMemStatus};
 use crate::devices::virtio::net::Net;
 use crate::logger::{METRICS, MetricsError, error, info, warn};
-use crate::persist::{MicrovmState, MicrovmStateError, VmInfo};
+use crate::persist::{MicrovmState, MicrovmStateError, Snapshotter, VmInfo};
 use crate::rate_limiter::BucketUpdate;
 use crate::vmm_config::instance_info::{InstanceInfo, VmState};
 use crate::vstate::memory::{GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
@@ -303,8 +302,11 @@ pub struct Vmm {
     /// VM object
     pub vm: Arc<Vm>,
     // Save UFFD in order to keep it open in the Firecracker process, as well.
+    // #[allow(unused)]
+    // uffd: Option<Uffd>,
+    // Save some state related to the snapshotter, such as the UFFD
     #[allow(unused)]
-    uffd: Option<Uffd>,
+    snapshotter: Snapshotter,
     /// Handles to the vcpu threads with vcpu_fds inside them.
     pub vcpus_handles: Vec<VcpuHandle>,
     // Used by Vcpus and devices to initiate teardown; Vmm should never write here.

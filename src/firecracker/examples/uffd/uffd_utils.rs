@@ -12,9 +12,11 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs::File;
+use std::io::Write;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
 use std::ptr;
+use std::slice;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -144,14 +146,19 @@ impl UffdHandler {
             .expect("range should be valid");
     }
 
-    pub fn serve_pf(&mut self, addr: *mut u8, len: usize) -> bool {
+    pub fn serve_pf(&mut self, addr: *mut u8, len: usize, wp: bool) -> bool {
         // Find the start of the page that the current faulting address belongs to.
         let dst = (addr as usize & !(self.page_size - 1)) as *mut libc::c_void;
-        let fault_page_addr = dst as u64;
+        let fault_page_addr = dst as usize;
 
         for region in self.mem_regions.iter() {
-            if region.contains(fault_page_addr) {
-                return self.populate_from_file(region, fault_page_addr, len);
+            if region.contains(fault_page_addr as u64) {
+                if wp {
+                    self.copy_to_file(region, fault_page_addr, len);
+                    return self.remove_write_protection(fault_page_addr, len);
+                } else {
+                    return self.populate_from_file(region, fault_page_addr, len);
+                }
             }
         }
 
@@ -161,9 +168,45 @@ impl UffdHandler {
         );
     }
 
-    fn populate_from_file(&self, region: &GuestRegionUffdMapping, dst: u64, len: usize) -> bool {
-        let offset = dst - region.base_host_virt_addr;
-        let src = self.backing_buffer as u64 + region.offset + offset;
+    /// Remove host write protection from a given region of memory
+    fn remove_write_protection(
+        &self,
+        start: usize,
+        len: usize,
+    ) -> bool {
+        match self
+            .uffd
+            .remove_write_protection(start as *mut _, len, true)
+        {
+            Ok(_) => {}
+            Err(e) => panic!("Removing write protection failed: {e:?}"),
+        }
+
+        true
+    }
+
+    /// Write a given region to the backend
+    fn copy_to_file(&self, region: &GuestRegionUffdMapping, src: usize, len: usize) {
+        let offset = src - region.base_host_virt_addr as usize;
+        let dst = self.backing_buffer as usize + region.offset as usize + offset;
+
+        // SAFETY: `src` is a valid const pointer, `dst` is a valid mutable pointer
+        match unsafe {
+            slice::from_raw_parts_mut(dst as *mut _, len)
+                .write(slice::from_raw_parts(src as *const _, len))
+        } {
+            Ok(n) => assert!(n > 0),
+            Err(e) => panic!("Write from UFFD backend failed: {e:?}"),
+        }
+    }
+
+    /// Populate a given region from the backend
+    fn populate_from_file(&self, region: &GuestRegionUffdMapping, dst: usize, len: usize) -> bool {
+        // SAFETY: `dst > region.base_host_virt_addr`, since `dst` points to somewhere in the
+        // region
+        let offset = dst - region.base_host_virt_addr as usize;
+        // SAFETY: `backing_buffer` points to a region larger than `region.offset + offset`
+        let src = self.backing_buffer as usize + region.offset as usize + offset;
 
         unsafe {
             match self.uffd.copy(src as *const _, dst as *mut _, len, true) {

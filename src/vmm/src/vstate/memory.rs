@@ -14,6 +14,7 @@ use bitvec::vec::BitVec;
 use kvm_bindings::{KVM_MEM_LOG_DIRTY_PAGES, kvm_userspace_memory_region};
 use log::error;
 use serde::{Deserialize, Serialize};
+use userfaultfd::Uffd;
 pub use vm_memory::bitmap::{AtomicBitmap, BS, Bitmap, BitmapSlice};
 pub use vm_memory::mmap::MmapRegionBuilder;
 use vm_memory::mmap::{MmapRegionError, NewBitmap};
@@ -24,6 +25,7 @@ pub use vm_memory::{
 use vm_memory::{GuestMemoryError, GuestMemoryRegionBytes, VolatileSlice, WriteVolatile};
 use vmm_sys_util::errno;
 
+use crate::logger::info;
 use crate::utils::{get_page_size, u64_to_usize};
 use crate::vmm_config::machine_config::HugePageConfig;
 use crate::vstate::vm::VmError;
@@ -59,6 +61,8 @@ pub enum MemoryError {
     Unaligned,
     /// Error protecting memory slot: {0}
     Mprotect(std::io::Error),
+    /// Error write-protecting memory slot: {0}
+    Uffd(userfaultfd::Error),
 }
 
 /// Type of the guest region
@@ -582,6 +586,18 @@ where
 
     /// Discards a memory range, freeing up memory pages
     fn discard_range(&self, addr: GuestAddress, range_len: usize) -> Result<(), GuestMemoryError>;
+
+    /// Mark all memory regions as write-protected.
+    fn mark_all_wp(&self, uffd: &Uffd) -> Result<(), MemoryError>;
+
+    ///// Dump specified contents to writer and remove write protection from region
+    //fn dump_and_reset_wp<T: WriteVolatile + std::io::Seek>(
+    //    &self,
+    //    writer: &mut T,
+    //    uffd: &Uffd,
+    //    addr: GuestAddress,
+    //    range_len: usize,
+    //) -> Result<(), MemoryError>;
 }
 
 /// State of a guest memory region saved to file/buffer.
@@ -759,6 +775,41 @@ impl GuestMemoryExtension for GuestMemoryMmap {
             region.discard_range(start, len)
         })
     }
+
+    fn mark_all_wp(&self, uffd: &Uffd) -> Result<(), MemoryError> {
+        self.iter().try_for_each(|region| {
+            // The start address is always going to be in the region, so this should never fail
+            let guest_start = region.to_region_addr(region.start_addr()).unwrap();
+            let start = region.get_host_address(guest_start).unwrap();
+
+            info!(
+                "In region {:?} (host {:?}) of size {:?}",
+                guest_start,
+                start,
+                region.size(),
+            );
+
+            uffd.write_protect(start as *mut core::ffi::c_void, region.size())
+                .map_err(MemoryError::Uffd)?;
+            Ok(())
+        })
+    }
+
+    // fn dump_and_reset_wp<T: WriteVolatile + std::io::Seek>(
+    //     &self,
+    //     writer: &mut T,
+    //     uffd: &Uffd,
+    //     addr: GuestAddress,
+    //     range_len: usize,
+    // ) -> Result<(), MemoryError> {
+    //     let page_size = get_page_size().map_err(MemoryError::PageSize)?;
+    //
+    //     self.try_for_each_region_in_range(addr, range_len, |region, start, len| {
+    //         writer.write_all_volatile(&region.get_slice(MemoryRegionAddress(start), len))
+    //     })
+    //     .map_err(MemoryError::WriteMemory)?;
+    //     todo!()
+    // }
 }
 
 fn create_memfd(

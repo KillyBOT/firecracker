@@ -2,14 +2,14 @@
 
 set -e
 
-ID="$1"
-JAILER_ROOT_PATH="/srv/jailer/firecracker/$ID/root"
+UUID="$1"
+JAILER_ROOT_PATH="/srv/jailer/firecracker/$UUID/root"
 API_SOCKET_PATH="$JAILER_ROOT_PATH/run/firecracker.socket"
 UFFD_SOCKET_PATH="$JAILER_ROOT_PATH/dev/userfaultfd"
 
-if [ -z "$ID" ]; then
-  echo "Error: No VM ID provided"
-  echo "Usage: $0 <VM ID>"
+if [ -z "$UUID" ]; then
+  echo "Error: No VM UUID provided"
+  echo "Usage: $0 [VM UUID]"
   exit 1
 fi
 

@@ -21,6 +21,7 @@ use kvm_bindings::{
 use kvm_ioctls::VmFd;
 use log::debug;
 use serde::{Deserialize, Serialize};
+use userfaultfd::Uffd;
 use vmm_sys_util::errno;
 use vmm_sys_util::eventfd::EventFd;
 
@@ -335,6 +336,7 @@ impl Vm {
         &self,
         mem_file_path: &Path,
         snapshot_type: SnapshotType,
+        uffd: Option<&Uffd>,
     ) -> Result<(), CreateSnapshotError> {
         use self::CreateSnapshotError::*;
 
@@ -384,6 +386,9 @@ impl Vm {
                 self.guest_memory().dump(&mut file)?;
                 self.reset_dirty_bitmap();
                 self.guest_memory().reset_dirty();
+            }
+            SnapshotType::LazyDiff => {
+                self.guest_memory().mark_all_wp(uffd.unwrap())?;
             }
         };
 

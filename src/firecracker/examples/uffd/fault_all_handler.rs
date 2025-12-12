@@ -11,6 +11,7 @@ use std::fs::File;
 use std::os::unix::net::UnixListener;
 
 use uffd_utils::{Runtime, UffdHandler};
+use userfaultfd::FaultKind;
 use utils::time::{ClockType, get_time_us};
 
 fn main() {
@@ -34,10 +35,14 @@ fn main() {
             .expect("uffd_msg not ready");
 
         match event {
-            userfaultfd::Event::Pagefault { .. } => {
+            userfaultfd::Event::Pagefault { kind, .. } => {
                 let start = get_time_us(ClockType::Monotonic);
                 for region in uffd_handler.mem_regions.clone() {
-                    uffd_handler.serve_pf(region.base_host_virt_addr as _, region.size);
+                    uffd_handler.serve_pf(
+                        region.base_host_virt_addr as _,
+                        region.size,
+                        kind == FaultKind::WriteProtected,
+                    );
                 }
                 let end = get_time_us(ClockType::Monotonic);
 

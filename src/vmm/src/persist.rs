@@ -34,7 +34,9 @@ use crate::utils::u64_to_usize;
 use crate::vmm_config::boot_source::BootSourceConfig;
 use crate::vmm_config::instance_info::InstanceInfo;
 use crate::vmm_config::machine_config::{HugePageConfig, MachineConfigError, MachineConfigUpdate};
-use crate::vmm_config::snapshot::{CreateSnapshotParams, LoadSnapshotParams, MemBackendType};
+use crate::vmm_config::snapshot::{
+    CreateSnapshotParams, LoadSnapshotParams, MemBackendType, SnapshotType,
+};
 use crate::vstate::kvm::KvmState;
 use crate::vstate::memory::{
     self, GuestMemoryState, GuestRegionMmap, GuestRegionType, MemoryError,
@@ -111,6 +113,14 @@ pub struct GuestRegionUffdMapping {
     pub page_size_kib: usize,
 }
 
+/// The VMM's snapshotter. Includes information about where to send snapshots
+#[derive(Debug)]
+pub struct Snapshotter {
+    /// A userfaultfd object, kept open to perform some operations. If `None`, the file will be
+    /// read/written to in its entirety
+    pub uffd: Option<Uffd>,
+}
+
 /// Errors related to saving and restoring Microvm state.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum MicrovmStateError {
@@ -161,8 +171,13 @@ pub fn create_snapshot(
 
     snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
 
+    let uffd = match params.snapshot_type {
+        SnapshotType::LazyDiff if vmm.snapshotter.uffd.is_some() => vmm.snapshotter.uffd.as_ref(),
+        _ => None,
+    };
+
     vmm.vm
-        .snapshot_memory_to_file(&params.mem_file_path, params.snapshot_type)?;
+        .snapshot_memory_to_file(&params.mem_file_path, params.snapshot_type, uffd)?;
 
     // We need to mark queues as dirty again for all activated devices. The reason we
     // do it here is that we don't mark pages as dirty during runtime

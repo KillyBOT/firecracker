@@ -9,10 +9,13 @@ assert_commands_exist curl debootstrap nft jq
 ARCH=$(uname -m)
 DEBIAN_VERSION="bookworm"
 ROOTFS_SIZE="1G"
-ID="$(uuidgen | tr A-Z a-z)"
+UUID="$(uuidgen | tr A-Z a-z)"
 
-JAILER_ROOT_DIR="/srv/jailer/firecracker/$ID/root"
+JAILER_ROOT_DIR="/srv/jailer/firecracker/$UUID/root"
 #API_SOCKET="${JAILER_ROOT_DIR}/run/firecracker.socket"
+
+TMP_DIR="/tmp/$UUID"
+UFFD_SOCKET="/tmp"
 
 # KERNEL="kernel-debian-${DEBIAN_VERSION}.bin"
 KERNEL_VERSION="6.1"
@@ -164,7 +167,7 @@ enable_networking $TAP_DEV "$HOST_IP$MASK_SHORT" $GUEST_IP $HOST_IFACE
 
 sudo $JAILER \
     --exec-file $FIRECRACKER \
-    --id $ID \
+    --id $UUID \
     --uid $(id -u jailer) \
     --gid $(id -g jailer) \
     --new-pid-ns \
@@ -178,7 +181,7 @@ sudo $JAILER \
 # Sleep for a bit to give the VM time to start
 sleep 1s
 
-echo "Created VM with ID $ID"
+echo "Created VM with UUID $UUID"
 echo "Jailer root is at /srv/jailer/firecracker/<ID>/root"
 echo
 echo "Running the following (DO NOT LOG OUT; use \`reboot\` to shutdown the VM):"
@@ -195,10 +198,10 @@ echo "Logs written to $LOGFILE"
 
 function clean() {
 
-  echo "Cleaning VM $ID"
+  echo "Cleaning VM $UUID"
 
   disable_neworking $TAP_DEV
-  sudo rm -rf "/srv/jailer/firecracker/$ID"
+  sudo rm -rf "/srv/jailer/firecracker/$UUID"
 }
 
 clean

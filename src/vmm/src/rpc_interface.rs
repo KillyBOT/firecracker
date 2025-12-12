@@ -882,6 +882,16 @@ impl RuntimeApiController {
                     elapsed_time_us
                 );
             }
+            SnapshotType::LazyDiff => {
+                let elapsed_time_us = update_metric_with_elapsed_time(
+                    &METRICS.latencies_us.vmm_lazy_diff_create_snapshot,
+                    create_start_us,
+                );
+                info!(
+                    "'create lazydiff snapshot' VMM action took {} us.",
+                    elapsed_time_us
+                );
+            }
         }
         Ok(VmmData::Empty)
     }

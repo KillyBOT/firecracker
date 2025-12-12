@@ -18,6 +18,8 @@ pub enum SnapshotType {
     /// Full snapshot.
     #[default]
     Full,
+    /// Lazy diff snapshot.
+    LazyDiff,
 }
 
 /// Specifies the method through which guest memory will get populated when
